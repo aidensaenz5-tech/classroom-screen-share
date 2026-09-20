@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classroom Screen Share</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f5f7fb;color:#172033}
+main{max-width:900px;margin:auto;padding:20px}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:16px;padding:18px;margin:12px 0}
+button,input,select{font:inherit;min-height:44px;border-radius:10px}
+button{border:0;padding:0 16px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer}
+button.secondary{background:#e9edf5;color:#172033}
+button.danger{background:#dc2626}
+input,select{box-sizing:border-box;border:1px solid #cbd5e1;padding:0 12px;width:100%}
+.tabs,.row{display:flex;gap:8px;flex-wrap:wrap}
+.tabs button{flex:1}
+.hidden{display:none}.muted{color:#64748b}
+.code{font-size:42px;letter-spacing:8px;text-align:center;font-weight:800;margin:12px}
+.status{padding:10px;border-radius:10px;background:#f1f5f9;margin-top:10px}
+.app{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid #e5e7eb}
+.badge{padding:5px 9px;border-radius:999px;background:#fee2e2;color:#991b1b;font-size:12px;font-weight:700}
+.badge.allowed{background:#dcfce7;color:#166534}
+#teacherMessageTop{position:sticky;top:0;z-index:5;background:#111827;color:white;padding:12px;border-radius:12px;margin-bottom:12px}
+#teacherMessageTop.hidden{display:none}
+iframe{width:100%;height:360px;border:1px solid #cbd5e1;border-radius:12px}
+video{width:100%;background:#111;border-radius:12px;display:block;min-height:200px}
+</style>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+<main>
+<div id="teacherMessageTop" class="hidden"></div>
+<h1>Classroom Control</h1>
+<p class="muted">Teacher screen sharing, messages, and classroom website controls.</p>
+
+<div class="tabs">
+<button id="teacherTab">Teacher</button>
+<button id="studentTab" class="secondary">Student</button>
+</div>
+
+<section id="teacher">
+<div class="card">
+<h2>Teacher Mode</h2>
+<p class="muted">Give this code to your student.</p>
+<div id="teacherCode" class="code">------</div>
+<div id="teacherStatus" class="status">Starting...</div>
+<button id="requestBtn" disabled style="margin-top:10px">Request Screen Share</button>
+</div>
+
+<div class="card">
+<h2>📢 Message Students</h2>
+<p class="muted">This appears at the top of the student's Classroom Control page.</p>
+<div class="row">
+<input id="messageInput" placeholder="Example: Math starts now!">
+<button id="sendMessage">Send Message</button>
+<button id="clearMessage" class="secondary">Clear</button>
+</div>
+</div>
+
+<div class="card">
+<h2>🚫 Website Controls</h2>
+<p class="muted">These controls apply to websites opened through the student's Classroom Control browser. They do not control Chrome/Edge or other apps outside this page.</p>
+<div class="row">
+<input id="siteInput" placeholder="youtube.com">
+<button id="addSite">Add Website</button>
+</div>
+<div id="siteList" style="margin-top:10px"></div>
+</div>
+
+<div class="card">
+<h2>🌐 Student Browser Test</h2>
+<p class="muted">Use this to test the block page inside the student app.</p>
+<input id="teacherTestUrl" placeholder="https://youtube.com" style="margin-bottom:8px">
+<button id="teacherOpenTest">Open Website</button>
+<div id="teacherBlockResult" class="status hidden"></div>
+</div>
+
+<div id="teacherScreen" class="card hidden">
+<h2>Student's actual screen</h2>
+<video id="remoteVideo" autoplay playsinline></video>
+<button id="stopTeacher" class="danger" style="margin-top:10px">Stop Viewing</button>
+</div>
+</section>
+
+<section id="student" class="hidden">
+<div class="card">
+<h2>Student Mode</h2>
+<label>Teacher's 6-digit code</label>
+<input id="codeInput" inputmode="numeric" maxlength="6" placeholder="123456" style="margin-top:8px">
+<button id="connectBtn" style="margin-top:10px">Connect</button>
+<div id="studentStatus" class="status">Not connected</div>
+</div>
+
+<div id="approval" class="card hidden">
+<h3>🔒 Screen-share request</h3>
+<p>Your teacher wants to view your screen.</p>
+<div class="row">
+<button id="approveBtn">Approve & Share</button>
+<button id="denyBtn" class="secondary">Deny</button>
+</div>
+</div>
+
+<div class="card">
+<h2>🌐 Student Browser</h2>
+<p class="muted">Websites blocked by your teacher show a blocked message here.</p>
+<div class="row">
+<input id="studentUrl" placeholder="https://example.com">
+<button id="studentOpen">Open</button>
+</div>
+<div id="studentBrowser" class="hidden" style="margin-top:12px">
+<div id="blockedPage" class="hidden" style="padding:30px;text-align:center;border:2px solid #fecaca;border-radius:12px;background:#fff1f2">
+<h2>🚫 Website Blocked</h2>
+<p id="blockedText"></p>
+<p class="muted">Your teacher has blocked this website.</p>
+</div>
+<iframe id="studentFrame" title="Student website" class="hidden"></iframe>
+</div>
+</div>
+</section>
+
+<script>
+let peer=null, teacherPeerId=null, conn=null, activeCall=null, localStream=null;
+let blockedSites=new Set();
+
+const $=id=>document.getElementById(id);
+
+function normalizeSite(v){
+  v=v.trim().toLowerCase();
+  v=v.replace(/^https?:\/\//,'').split('/')[0].split('?')[0];
+  return v;
+}
+function isBlocked(url){
+  const s=normalizeSite(url);
+  for(const b of blockedSites){
+    if(s===b || s.endsWith('.'+b)) return b;
+  }
+  return null;
+}
+function setMode(mode){
+  $('teacher').classList.toggle('hidden',mode!=='teacher');
+  $('student').classList.toggle('hidden',mode!=='student');
+  $('teacherTab').className=mode==='teacher'?'':'secondary';
+  $('studentTab').className=mode==='student'?'':'secondary';
+}
+$('teacherTab').onclick=()=>setMode('teacher');
+$('studentTab').onclick=()=>setMode('student');
+
+function renderSites(){
+  const box=$('siteList'); box.innerHTML='';
+  if(!blockedSites.size){box.innerHTML='<p class="muted">No websites blocked.</p>';return;}
+  [...blockedSites].forEach(site=>{
+    const row=document.createElement('div'); row.className='app';
+    row.innerHTML='<div><strong>'+site+'</strong><div class="badge">BLOCKED</div></div>';
+    const btn=document.createElement('button'); btn.className='secondary'; btn.textContent='Unblock';
+    btn.onclick=()=>{blockedSites.delete(site); renderSites(); broadcast({type:'block-list',sites:[...blockedSites]});};
+    row.appendChild(btn); box.appendChild(row);
+  });
+}
+function broadcast(msg){
+  if(conn&&conn.open) conn.send(msg);
+}
+$('addSite').onclick=()=>{
+  const site=normalizeSite($('siteInput').value);
+  if(!site){return}
+  blockedSites.add(site);
+  $('siteInput').value='';
+  renderSites();
+  broadcast({type:'block-list',sites:[...blockedSites]});
+};
+$('sendMessage').onclick=()=>{
+  const m=$('messageInput').value.trim();
+  if(!m)return;
+  broadcast({type:'teacher-message',message:m});
+  $('teacherMessageTop').textContent='📢 Sent: '+m;
+  $('teacherMessageTop').classList.remove('hidden');
+};
+$('clearMessage').onclick=()=>{
+  broadcast({type:'clear-message'});
+  $('teacherMessageTop').classList.add('hidden');
+};
+
+function newCode(){return String(Math.floor(100000+Math.random()*900000));}
+function startTeacher(){
+  const code=newCode(); teacherPeerId='teacher-'+code;
+  $('teacherCode').textContent=code;
+  peer=new Peer(teacherPeerId);
+  peer.on('open',()=>{$('teacherStatus').textContent='Waiting for your student to enter the code...';});
+  peer.on('connection',c=>{
+    conn=c;
+    $('teacherStatus').textContent='✅ Student connected.';
+    $('requestBtn').disabled=false;
+    c.on('close',()=>{$('teacherStatus').textContent='Student disconnected.';$('requestBtn').disabled=true;stopTeacherView();});
+  });
+  peer.on('call',call=>{
+    activeCall=call; call.answer();
+    call.on('stream',s=>{$('remoteVideo').srcObject=s;$('teacherScreen').classList.remove('hidden');$('teacherStatus').textContent='🟢 Screen sharing is active.';});
+    call.on('close',stopTeacherView);
+  });
+  peer.on('error',()=>{$('teacherStatus').textContent='Connection error. Refresh for a new code.';});
+}
+$('requestBtn').onclick=()=>{
+  if(conn&&conn.open){conn.send({type:'screen-request'});$('teacherStatus').textContent='Screen request sent. Waiting for approval...';}
+};
+function stopTeacherView(){
+  $('remoteVideo').srcObject=null;$('teacherScreen').classList.add('hidden');
+  if(activeCall){try{activeCall.close()}catch(e){}}
+  activeCall=null;
+}
+$('stopTeacher').onclick=()=>{broadcast({type:'stop'});stopTeacherView();$('teacherStatus').textContent='Viewing stopped.';};
+
+function studentOpenUrl(){
+  const url=$('studentUrl').value.trim();
+  if(!url)return;
+  const blocked=isBlocked(url);
+  $('studentBrowser').classList.remove('hidden');
+  if(blocked){
+    $('blockedPage').classList.remove('hidden');
+    $('studentFrame').classList.add('hidden');
+    $('blockedText').textContent=normalizeSite(url)+' is blocked by your teacher.';
+  }else{
+    $('blockedPage').classList.add('hidden');
+    $('studentFrame').classList.remove('hidden');
+    let full=/^https?:\/\//i.test(url)?url:'https://'+url;
+    $('studentFrame').src=full;
+  }
+}
+$('studentOpen').onclick=studentOpenUrl;
+
+$('connectBtn').onclick=()=>{
+  const code=$('codeInput').value.replace(/\D/g,'');
+  if(code.length!==6){$('studentStatus').textContent='Enter exactly 6 digits.';return;}
+  if(peer){try{peer.destroy()}catch(e){}}
+  peer=new Peer();
+  peer.on('open',()=>{
+    teacherPeerId='teacher-'+code;
+    conn=peer.connect(teacherPeerId,{reliable:true});
+    conn.on('open',()=>{$('studentStatus').textContent='✅ Connected to teacher.';});
+    conn.on('data',msg=>{
+      if(!msg)return;
+      if(msg.type==='screen-request'){$('approval').classList.remove('hidden');$('studentStatus').textContent='Your teacher requested your screen.';}
+      if(msg.type==='block-list'){blockedSites=new Set(msg.sites||[]);$('studentStatus').textContent='Website rules updated.';}
+      if(msg.type==='teacher-message'){$('teacherMessageTop').textContent='📢 '+msg.message;$('teacherMessageTop').classList.remove('hidden');}
+      if(msg.type==='clear-message'){$('teacherMessageTop').classList.add('hidden');}
+      if(msg.type==='stop')stopStudentShare();
+    });
+    conn.on('close',()=>{$('studentStatus').textContent='Teacher disconnected.';stopStudentShare();});
+  });
+  peer.on('error',()=>{$('studentStatus').textContent='Could not connect. Check the code.';});
+};
+
+$('approveBtn').onclick=async()=>{
+  $('approval').classList.add('hidden');
+  if(!conn||!conn.open){$('studentStatus').textContent='Teacher connection was lost.';return;}
+  if(!navigator.mediaDevices?.getDisplayMedia){$('studentStatus').textContent='This browser does not support screen sharing. Try Chrome or Edge on a computer.';return;}
+  try{
+    localStream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false});
+    activeCall=peer.call(teacherPeerId,localStream);
+    $('studentStatus').textContent='🟢 Screen sharing is active.';
+    localStream.getVideoTracks()[0].onended=()=>stopStudentShare();
+  }catch(e){$('studentStatus').textContent='Screen sharing was cancelled or blocked.';}
+};
+$('denyBtn').onclick=()=>{$('approval').classList.add('hidden');if(conn?.open)conn.send({type:'denied'});$('studentStatus').textContent='You denied the request.';};
+function stopStudentShare(){
+  if(localStream){localStream.getTracks().forEach(t=>t.stop());localStream=null;}
+  if(activeCall){try{activeCall.close()}catch(e){}activeCall=null;}
+  $('studentStatus').textContent='Screen sharing stopped.';
+}
+
+$('teacherOpenTest').onclick=()=>{
+  const url=$('teacherTestUrl').value.trim(); if(!url)return;
+  const b=isBlocked(url), out=$('teacherBlockResult');
+  out.classList.remove('hidden');
+  out.textContent=b?'🚫 BLOCKED: '+normalizeSite(url):'✅ ALLOWED: '+normalizeSite(url);
+};
+
+setMode('teacher');renderSites();startTeacher();
+</script>
+</main>
+</body>
+</html>
