@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classroom Screen Share</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f5f7fb;color:#172033}
+main{max-width:760px;margin:auto;padding:24px}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:16px;padding:20px;margin:14px 0}
+button,input{font:inherit;min-height:48px;border-radius:10px}
+button{border:0;padding:0 18px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+.secondary{background:#e9edf5;color:#172033}.danger{background:#dc2626}
+input{box-sizing:border-box;width:100%;padding:0 14px;border:1px solid #cbd5e1}
+.tabs{display:flex;gap:8px}.tabs button{flex:1}
+.hidden{display:none}.muted{color:#64748b}
+.code{font-size:44px;letter-spacing:8px;text-align:center;font-weight:800;margin:14px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+video{width:100%;background:#111;border-radius:12px;display:block;min-height:200px}
+.status{padding:10px;border-radius:10px;background:#f1f5f9;margin-top:12px}
+</style>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+<main>
+<h1>Classroom Screen Share</h1>
+<p class="muted">Teacher and student must open this same HTTPS website. The student must approve screen sharing.</p>
+
+<div class="tabs">
+<button id="teacherTab">Teacher</button>
+<button id="studentTab" class="secondary">Student</button>
+</div>
+
+<section id="teacher">
+<div class="card">
+<h2>Teacher Mode</h2>
+<p class="muted">Give this code to your sister.</p>
+<div id="teacherCode" class="code">------</div>
+<div id="teacherStatus" class="status">Starting...</div>
+<button id="requestBtn" disabled style="margin-top:12px">Request Screen Share</button>
+</div>
+<div id="teacherScreen" class="card hidden">
+<h2>Sister's actual screen</h2>
+<video id="remoteVideo" autoplay playsinline></video>
+<button id="stopTeacher" class="danger" style="margin-top:12px">Stop Viewing</button>
+</div>
+</section>
+
+<section id="student" class="hidden">
+<div class="card">
+<h2>Student Mode</h2>
+<label for="codeInput">Teacher's 6-digit code</label>
+<input id="codeInput" inputmode="numeric" maxlength="6" placeholder="123456" style="margin-top:8px">
+<button id="connectBtn" style="margin-top:10px">Connect</button>
+<div id="studentStatus" class="status">Not connected</div>
+</div>
+<div id="approval" class="card hidden">
+<h3>🔒 Screen-share request</h3>
+<p>Your teacher wants to view your screen.</p>
+<p class="muted">Tap approve, then choose the screen/window you want to share in the browser dialog.</p>
+<div class="row">
+<button id="approveBtn">Approve & Share</button>
+<button id="denyBtn" class="secondary">Deny</button>
+</div>
+</div>
+</section>
+
+<div class="card">
+<strong>If it says “not working”:</strong>
+<p class="muted">The website must be opened with <b>https://</b>. The student must allow screen sharing. On phones, browser support for sharing the entire screen can be limited; a computer/tablet browser is usually more reliable.</p>
+</div>
+</main>
+
+<script>
+let peer=null;
+let teacherPeerId=null;
+let teacherConnection=null;
+let activeCall=null;
+let localStream=null;
+
+const $=id=>document.getElementById(id);
+
+function setMode(mode){
+  $("teacher").classList.toggle("hidden",mode!=="teacher");
+  $("student").classList.toggle("hidden",mode!=="student");
+  $("teacherTab").className=mode==="teacher"?"":"secondary";
+  $("studentTab").className=mode==="student"?"":"secondary";
+}
+$("teacherTab").onclick=()=>setMode("teacher");
+$("studentTab").onclick=()=>setMode("student");
+
+function newCode(){
+  return String(Math.floor(100000+Math.random()*900000));
+}
+
+function startTeacher(){
+  const code=newCode();
+  teacherPeerId="teacher-"+code;
+  $("teacherCode").textContent=code;
+  peer=new Peer(teacherPeerId);
+
+  peer.on("open",()=>{
+    $("teacherStatus").textContent="Waiting for your sister to enter the code...";
+  });
+
+  peer.on("connection",conn=>{
+    teacherConnection=conn;
+    $("teacherStatus").textContent="✅ Sister connected. You can request her screen.";
+    $("requestBtn").disabled=false;
+
+    conn.on("data",msg=>{
+      if(msg && msg.type==="denied"){
+        $("teacherStatus").textContent="Sister denied the screen-share request.";
+      }
+    });
+    conn.on("close",()=>{
+      $("teacherStatus").textContent="Sister disconnected.";
+      $("requestBtn").disabled=true;
+      stopTeacherView();
+    });
+  });
+
+  peer.on("call",call=>{
+    activeCall=call;
+    call.answer();
+    call.on("stream",stream=>{
+      $("remoteVideo").srcObject=stream;
+      $("teacherScreen").classList.remove("hidden");
+      $("teacherStatus").textContent="🟢 Screen sharing is active.";
+    });
+    call.on("close",stopTeacherView);
+    call.on("error",()=>{
+      $("teacherStatus").textContent="Screen connection ended.";
+      stopTeacherView();
+    });
+  });
+
+  peer.on("error",err=>{
+    console.error(err);
+    $("teacherStatus").textContent="Connection error. Refresh the page to get a new code.";
+  });
+}
+
+$("requestBtn").onclick=()=>{
+  if(teacherConnection && teacherConnection.open){
+    teacherConnection.send({type:"screen-request"});
+    $("teacherStatus").textContent="Request sent. Waiting for approval...";
+  }
+};
+
+function stopTeacherView(){
+  $("remoteVideo").srcObject=null;
+  $("teacherScreen").classList.add("hidden");
+  if(activeCall){try{activeCall.close()}catch(e){}}
+  activeCall=null;
+}
+$("stopTeacher").onclick=()=>{
+  if(teacherConnection && teacherConnection.open) teacherConnection.send({type:"stop"});
+  stopTeacherView();
+  $("teacherStatus").textContent="Viewing stopped.";
+};
+
+$("connectBtn").onclick=()=>{
+  const code=$("codeInput").value.replace(/\D/g,"");
+  if(code.length!==6){
+    $("studentStatus").textContent="Enter exactly 6 digits.";
+    return;
+  }
+
+  if(peer){try{peer.destroy()}catch(e){}}
+  peer=new Peer();
+
+  peer.on("open",()=>{
+    teacherPeerId="teacher-"+code;
+    teacherConnection=peer.connect(teacherPeerId,{reliable:true});
+
+    teacherConnection.on("open",()=>{
+      $("studentStatus").textContent="✅ Connected. Waiting for teacher...";
+    });
+
+    teacherConnection.on("data",msg=>{
+      if(msg && msg.type==="screen-request"){
+        $("approval").classList.remove("hidden");
+        $("studentStatus").textContent="Your teacher requested your screen.";
+      }
+      if(msg && msg.type==="stop"){
+        stopStudentShare();
+      }
+    });
+
+    teacherConnection.on("close",()=>{
+      $("studentStatus").textContent="Teacher disconnected.";
+      stopStudentShare();
+    });
+
+    teacherConnection.on("error",()=>{
+      $("studentStatus").textContent="Could not connect. Check the code.";
+    });
+  });
+
+  peer.on("error",err=>{
+    console.error(err);
+    $("studentStatus").textContent="Could not connect. Check the code and make sure both devices are online.";
+  });
+};
+
+$("approveBtn").onclick=async()=>{
+  $("approval").classList.add("hidden");
+
+  if(!teacherConnection || !teacherConnection.open){
+    $("studentStatus").textContent="Teacher connection was lost.";
+    return;
+  }
+
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){
+    $("studentStatus").textContent="This browser/device does not support screen sharing. Try Chrome or Edge on a computer.";
+    return;
+  }
+
+  try{
+    localStream=await navigator.mediaDevices.getDisplayMedia({
+      video:true,
+      audio:false
+    });
+
+    activeCall=peer.call(teacherPeerId,localStream);
+
+    $("studentStatus").textContent="🟢 You are sharing your screen. Tap the browser's Stop Sharing button to end it.";
+
+    const track=localStream.getVideoTracks()[0];
+    track.onended=()=>{
+      stopStudentShare();
+      if(teacherConnection && teacherConnection.open)
+        teacherConnection.send({type:"student-stopped"});
+    };
+  }catch(err){
+    console.error(err);
+    $("studentStatus").textContent="Screen sharing was cancelled or blocked.";
+  }
+};
+
+$("denyBtn").onclick=()=>{
+  $("approval").classList.add("hidden");
+  if(teacherConnection && teacherConnection.open)
+    teacherConnection.send({type:"denied"});
+  $("studentStatus").textContent="You denied the request.";
+};
+
+function stopStudentShare(){
+  if(localStream){
+    localStream.getTracks().forEach(t=>t.stop());
+    localStream=null;
+  }
+  if(activeCall){try{activeCall.close()}catch(e){}}
+  activeCall=null;
+  $("studentStatus").textContent="Screen sharing stopped.";
+}
+
+setMode("teacher");
+startTeacher();
+</script>
+</body>
+</html>
